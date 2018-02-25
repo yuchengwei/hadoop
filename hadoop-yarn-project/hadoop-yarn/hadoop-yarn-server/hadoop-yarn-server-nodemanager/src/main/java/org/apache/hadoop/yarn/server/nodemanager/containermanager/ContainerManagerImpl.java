@@ -353,10 +353,6 @@ public class ContainerManagerImpl extends CompositeService implements
       rsrcLocalizationSrvc.recoverLocalizedResources(
           stateStore.loadLocalizationState());
 
-      if (this.amrmProxyEnabled) {
-        this.getAMRMProxyService().recover();
-      }
-
       RecoveredApplicationsState appsState = stateStore.loadApplicationsState();
       for (ContainerManagerApplicationProto proto :
            appsState.getApplications()) {
@@ -371,6 +367,11 @@ public class ContainerManagerImpl extends CompositeService implements
           LOG.debug("Recovering container with state: " + rcs);
         }
         recoverContainer(rcs);
+      }
+
+      // Recovery AMRMProxy state after apps and containers are recovered
+      if (this.amrmProxyEnabled) {
+        this.getAMRMProxyService().recover();
       }
 
       //Dispatching the RECOVERY_COMPLETED event through the dispatcher
@@ -450,7 +451,8 @@ public class ContainerManagerImpl extends CompositeService implements
           originalToken.getLogAggregationContext(),
           originalToken.getNodeLabelExpression(),
           originalToken.getContainerType(), originalToken.getExecutionType(),
-          originalToken.getAllocationRequestId());
+          originalToken.getAllocationRequestId(),
+          originalToken.getAllcationTags());
 
     } else {
       token = BuilderUtils.newContainerTokenIdentifier(req.getContainerToken());

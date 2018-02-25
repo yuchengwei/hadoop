@@ -73,7 +73,7 @@ public abstract class StateStoreDriver implements StateStoreRecordOperations {
 
     boolean success = initDriver();
     if (!success) {
-      LOG.error("Cannot intialize driver for {}", getDriverName());
+      LOG.error("Cannot initialize driver for {}", getDriverName());
       return false;
     }
 
@@ -128,9 +128,10 @@ public abstract class StateStoreDriver implements StateStoreRecordOperations {
   /**
    * Initialize storage for a single record class.
    *
-   * @param name String reference of the record class to initialize, used to
-   *             construct paths and file names for the record. Determined by
-   *             configuration settings for the specific driver.
+   * @param className String reference of the record class to initialize,
+   *                  used to construct paths and file names for the record.
+   *                  Determined by configuration settings for the specific
+   *                  driver.
    * @param clazz Record type corresponding to the provided name.
    * @return True if successful, false otherwise.
    */

@@ -957,7 +957,26 @@ public abstract class FileSystem extends Configured implements Closeable {
    * resource directly and verify that the resource referenced
    * satisfies constraints specified at its construciton.
    * @param fd PathHandle object returned by the FS authority.
+   * @throws InvalidPathHandleException If {@link PathHandle} constraints are
+   *                                    not satisfied
+   * @throws IOException IO failure
+   * @throws UnsupportedOperationException If {@link #open(PathHandle, int)}
+   *                                       not overridden by subclass
+   */
+  public FSDataInputStream open(PathHandle fd) throws IOException {
+    return open(fd, getConf().getInt(IO_FILE_BUFFER_SIZE_KEY,
+        IO_FILE_BUFFER_SIZE_DEFAULT));
+  }
+
+  /**
+   * Open an FSDataInputStream matching the PathHandle instance. The
+   * implementation may encode metadata in PathHandle to address the
+   * resource directly and verify that the resource referenced
+   * satisfies constraints specified at its construciton.
+   * @param fd PathHandle object returned by the FS authority.
    * @param bufferSize the size of the buffer to use
+   * @throws InvalidPathHandleException If {@link PathHandle} constraints are
+   *                                    not satisfied
    * @throws IOException IO failure
    * @throws UnsupportedOperationException If not overridden by subclass
    */
@@ -979,6 +998,8 @@ public abstract class FileSystem extends Configured implements Closeable {
    *         the specified constraints.
    */
   public final PathHandle getPathHandle(FileStatus stat, HandleOpt... opt) {
+    // method is final with a default so clients calling getPathHandle(stat)
+    // get the same semantics for all FileSystem implementations
     if (null == opt || 0 == opt.length) {
       return createPathHandle(stat, HandleOpt.path());
     }
@@ -2037,7 +2058,7 @@ public abstract class FileSystem extends Configured implements Closeable {
    *  </dd>
    * </dl>
    *
-   * @param pathPattern a regular expression specifying a pth pattern
+   * @param pathPattern a glob specifying a path pattern
 
    * @return an array of paths that match the path pattern
    * @throws IOException IO failure
@@ -2051,7 +2072,7 @@ public abstract class FileSystem extends Configured implements Closeable {
    * {@code pathPattern} and is accepted by the user-supplied path filter.
    * Results are sorted by their path names.
    *
-   * @param pathPattern a regular expression specifying the path pattern
+   * @param pathPattern a glob specifying the path pattern
    * @param filter a user-supplied path filter
    * @return null if {@code pathPattern} has no glob and the path does not exist
    *         an empty array if {@code pathPattern} has a glob and no path

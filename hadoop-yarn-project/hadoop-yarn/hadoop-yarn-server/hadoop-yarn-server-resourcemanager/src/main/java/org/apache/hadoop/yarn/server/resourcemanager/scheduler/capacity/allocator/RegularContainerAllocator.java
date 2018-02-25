@@ -143,8 +143,7 @@ public class RegularContainerAllocator extends AbstractContainerAllocator {
 
     // Is the nodePartition of pending request matches the node's partition
     // If not match, jump to next priority.
-    if (!appInfo.acceptNodePartition(schedulerKey, node.getPartition(),
-        schedulingMode)) {
+    if (!appInfo.precheckNode(schedulerKey, node, schedulingMode)) {
       ActivitiesLogger.APP.recordSkippedAppActivityWithoutAllocation(
           activitiesManager, node, application, priority,
           ActivityDiagnosticConstant.
@@ -299,7 +298,8 @@ public class RegularContainerAllocator extends AbstractContainerAllocator {
       }
       // If we have only ANY requests for this schedulerKey, we should not
       // delay its scheduling.
-      if (application.getResourceRequests(schedulerKey).size() == 1) {
+      if (application.getAppPlacementAllocator(schedulerKey)
+          .getUniqueLocationAsks() == 1) {
         return true;
       }
 

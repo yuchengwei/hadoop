@@ -22,6 +22,7 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -34,6 +35,7 @@ import org.apache.hadoop.registry.client.binding.RegistryUtils;
 import org.apache.hadoop.registry.client.types.ServiceRecord;
 import org.apache.hadoop.registry.client.types.yarn.PersistencePolicies;
 import org.apache.hadoop.registry.client.types.yarn.YarnRegistryAttributes;
+import org.apache.hadoop.security.HadoopKerberosName;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
@@ -56,6 +58,7 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.service.api.ServiceApiConstants;
 import org.apache.hadoop.yarn.service.api.records.Service;
+import org.apache.hadoop.yarn.service.api.records.ServiceState;
 import org.apache.hadoop.yarn.service.api.records.ConfigFile;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstance;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstanceEvent;
@@ -63,6 +66,7 @@ import org.apache.hadoop.yarn.service.component.instance.ComponentInstanceEventT
 import org.apache.hadoop.yarn.service.component.Component;
 import org.apache.hadoop.yarn.service.component.ComponentEvent;
 import org.apache.hadoop.yarn.service.component.ComponentEventType;
+import org.apache.hadoop.yarn.service.conf.YarnServiceConf;
 import org.apache.hadoop.yarn.service.conf.YarnServiceConstants;
 import org.apache.hadoop.yarn.service.containerlaunch.ContainerLaunchService;
 import org.apache.hadoop.yarn.service.provider.ProviderUtils;
@@ -72,6 +76,7 @@ import org.apache.hadoop.yarn.service.timelineservice.ServiceTimelinePublisher;
 import org.apache.hadoop.yarn.service.utils.ServiceApiUtil;
 import org.apache.hadoop.yarn.service.utils.ServiceRegistryUtils;
 import org.apache.hadoop.yarn.util.BoundedAppender;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -132,10 +137,12 @@ public class ServiceScheduler extends CompositeService {
   private AMRMClientAsync<AMRMClient.ContainerRequest> amRMClient;
   private NMClientAsync nmClient;
   private AsyncDispatcher dispatcher;
-  AsyncDispatcher compInstanceDispatcher;
   private YarnRegistryViewForProviders yarnRegistryOperations;
   private ServiceContext context;
   private ContainerLaunchService containerLaunchService;
+  private final Map<ContainerId, ComponentInstance> unRecoveredInstances =
+      new ConcurrentHashMap<>();
+  private long containerRecoveryTimeout;
 
   public ServiceScheduler(ServiceContext context) {
     super(context.service.getName());
@@ -143,16 +150,34 @@ public class ServiceScheduler extends CompositeService {
   }
 
   public void buildInstance(ServiceContext context, Configuration configuration)
-      throws YarnException {
+      throws YarnException, IOException {
     app = context.service;
     executorService = Executors.newScheduledThreadPool(10);
-    RegistryOperations registryClient = RegistryOperationsFactory
-        .createInstance("ServiceScheduler", configuration);
+    RegistryOperations registryClient = null;
+    if (UserGroupInformation.isSecurityEnabled() &&
+        !StringUtils.isEmpty(context.principal)
+        && !StringUtils.isEmpty(context.keytab)) {
+      Configuration conf = getConfig();
+      // Only take the first section of the principal
+      // e.g. hdfs-demo@EXAMPLE.COM will take hdfs-demo
+      // This is because somehow zookeeper client only uses the first section
+      // for acl validations.
+      String username = new HadoopKerberosName(context.principal.trim())
+          .getServiceName();
+      LOG.info("Set registry user accounts: sasl:" + username);
+      conf.set(KEY_REGISTRY_USER_ACCOUNTS, "sasl:" + username);
+      registryClient = RegistryOperationsFactory
+          .createKerberosInstance(conf,
+              "Client", context.principal, context.keytab);
+    } else {
+      registryClient = RegistryOperationsFactory
+          .createInstance("ServiceScheduler", configuration);
+    }
     addIfService(registryClient);
     yarnRegistryOperations =
         createYarnRegistryOperations(context, registryClient);
 
-    // register metrics
+    // register metrics,
     serviceMetrics = ServiceMetrics
         .register(app.getName(), "Metrics for service");
     serviceMetrics.tag("type", "Metrics type [component or service]", "service");
@@ -167,15 +192,12 @@ public class ServiceScheduler extends CompositeService {
     dispatcher = new AsyncDispatcher("Component  dispatcher");
     dispatcher.register(ComponentEventType.class,
         new ComponentEventHandler());
+    dispatcher.register(ComponentInstanceEventType.class,
+        new ComponentInstanceEventHandler());
     dispatcher.setDrainEventsOnStop();
     addIfService(dispatcher);
 
-    compInstanceDispatcher =
-        new AsyncDispatcher("CompInstance dispatcher");
-    compInstanceDispatcher.register(ComponentInstanceEventType.class,
-        new ComponentInstanceEventHandler());
-    addIfService(compInstanceDispatcher);
-    containerLaunchService = new ContainerLaunchService(context.fs);
+    containerLaunchService = new ContainerLaunchService(context);
     addService(containerLaunchService);
 
     if (YarnConfiguration.timelineServiceV2Enabled(configuration)) {
@@ -196,6 +218,9 @@ public class ServiceScheduler extends CompositeService {
     createConfigFileCache(context.fs.getFileSystem());
 
     createAllComponents();
+    containerRecoveryTimeout = getConfig().getInt(
+        YarnServiceConf.CONTAINER_RECOVERY_TIMEOUT_MS,
+        YarnServiceConf.DEFAULT_CONTAINER_RECOVERY_TIMEOUT_MS);
   }
 
   protected YarnRegistryViewForProviders createYarnRegistryOperations(
@@ -237,13 +262,10 @@ public class ServiceScheduler extends CompositeService {
       serviceTimelinePublisher
           .serviceAttemptUnregistered(context, diagnostics.toString());
     }
-    String msg = diagnostics.toString()
-        + "Navigate to the failed component for more details.";
-    amRMClient
-        .unregisterApplicationMaster(FinalApplicationStatus.ENDED, msg, "");
-    LOG.info("Service " + app.getName()
-        + " unregistered with RM, with attemptId = " + context.attemptId
-        + ", diagnostics = " + diagnostics);
+    amRMClient.unregisterApplicationMaster(FinalApplicationStatus.ENDED,
+        diagnostics.toString(), "");
+    LOG.info("Service {} unregistered with RM, with attemptId = {} " +
+        ", diagnostics = {} ", app.getName(), context.attemptId, diagnostics);
     super.serviceStop();
   }
 
@@ -254,12 +276,21 @@ public class ServiceScheduler extends CompositeService {
     RegisterApplicationMasterResponse response = amRMClient
         .registerApplicationMaster(bindAddress.getHostName(),
             bindAddress.getPort(), "N/A");
+
+    // Update internal resource types according to response.
+    if (response.getResourceTypes() != null) {
+      ResourceUtils.reinitializeResources(response.getResourceTypes());
+    }
+
     if (response.getClientToAMTokenMasterKey() != null
         && response.getClientToAMTokenMasterKey().remaining() != 0) {
       context.secretManager
           .setMasterKey(response.getClientToAMTokenMasterKey().array());
     }
     registerServiceInstance(context.attemptId, app);
+
+    // Since AM has been started and registered, the service is in STARTED state
+    app.setState(ServiceState.STARTED);
 
     // recover components based on containers sent from RM
     recoverComponents(response);
@@ -277,10 +308,10 @@ public class ServiceScheduler extends CompositeService {
   }
 
   private void recoverComponents(RegisterApplicationMasterResponse response) {
-    List<Container> recoveredContainers = response
+    List<Container> containersFromPrevAttempt = response
         .getContainersFromPreviousAttempts();
     LOG.info("Received {} containers from previous attempt.",
-        recoveredContainers.size());
+        containersFromPrevAttempt.size());
     Map<String, ServiceRecord> existingRecords = new HashMap<>();
     List<String> existingComps = null;
     try {
@@ -302,10 +333,9 @@ public class ServiceScheduler extends CompositeService {
         }
       }
     }
-    for (Container container : recoveredContainers) {
-      LOG.info("Handling container {} from previous attempt",
-          container.getId());
-      ServiceRecord record = existingRecords.get(RegistryPathUtils
+    for (Container container : containersFromPrevAttempt) {
+      LOG.info("Handling {} from previous attempt", container.getId());
+      ServiceRecord record = existingRecords.remove(RegistryPathUtils
           .encodeYarnID(container.getId().toString()));
       if (record != null) {
         Component comp = componentsById.get(container.getAllocationRequestId());
@@ -322,20 +352,49 @@ public class ServiceScheduler extends CompositeService {
         amRMClient.releaseAssignedContainer(container.getId());
       }
     }
+
+    existingRecords.forEach((encodedContainerId, record) -> {
+      String componentName = record.get(YarnRegistryAttributes.YARN_COMPONENT);
+      if (componentName != null) {
+        Component component = componentsByName.get(componentName);
+        ComponentInstance compInstance = component.getComponentInstance(
+            record.description);
+        ContainerId containerId = ContainerId.fromString(record.get(
+            YarnRegistryAttributes.YARN_ID));
+        unRecoveredInstances.put(containerId, compInstance);
+        component.removePendingInstance(compInstance);
+      }
+    });
+
+    if (unRecoveredInstances.size() > 0) {
+      executorService.schedule(() -> {
+        synchronized (unRecoveredInstances) {
+          // after containerRecoveryTimeout, all the containers that haven't be
+          // recovered by the RM will released. The corresponding Component
+          // Instances are added to the pending queues of their respective
+          // component.
+          unRecoveredInstances.forEach((containerId, instance) -> {
+            LOG.info("{}, wait on container {} expired",
+                instance.getCompInstanceId(), containerId);
+            instance.cleanupRegistryAndCompHdfsDir(containerId);
+            Component component = componentsByName.get(instance.getCompName());
+            component.requestContainers(1);
+            component.reInsertPendingInstance(instance);
+            amRMClient.releaseAssignedContainer(containerId);
+          });
+          unRecoveredInstances.clear();
+        }
+      }, containerRecoveryTimeout, TimeUnit.MILLISECONDS);
+    }
   }
 
   private void initGlobalTokensForSubstitute(ServiceContext context) {
     // ZK
     globalTokens.put(ServiceApiConstants.CLUSTER_ZK_QUORUM, getConfig()
         .getTrimmed(KEY_REGISTRY_ZK_QUORUM, DEFAULT_REGISTRY_ZK_QUORUM));
-    String user = null;
-    try {
-      user = UserGroupInformation.getCurrentUser().getShortUserName();
-    } catch (IOException e) {
-      LOG.error("Failed to get user.", e);
-    }
-    globalTokens
-        .put(SERVICE_ZK_PATH, ServiceRegistryUtils.mkClusterPath(user, app.getName()));
+    String user = RegistryUtils.currentUser();
+    globalTokens.put(SERVICE_ZK_PATH,
+        ServiceRegistryUtils.mkServiceHomePath(user, app.getName()));
 
     globalTokens.put(ServiceApiConstants.USER, user);
     String dnsDomain = getConfig().getTrimmed(KEY_DNS_DOMAIN);
@@ -413,7 +472,7 @@ public class ServiceScheduler extends CompositeService {
           }
         } catch (IOException e) {
           LOG.error(
-              "Failed to register app " + app.getName() + " in registry");
+              "Failed to register app " + app.getName() + " in registry", e);
         }
       }
     });
@@ -487,16 +546,50 @@ public class ServiceScheduler extends CompositeService {
             new ComponentEvent(comp.getName(), CONTAINER_ALLOCATED)
                 .setContainer(container);
         dispatcher.getEventHandler().handle(event);
-        Collection<AMRMClient.ContainerRequest> requests = amRMClient
-            .getMatchingRequests(container.getAllocationRequestId());
-        LOG.info("[COMPONENT {}]: {} outstanding container requests.",
-            comp.getName(), requests.size());
-        // remove the corresponding request
-        if (requests.iterator().hasNext()) {
-          LOG.info("[COMPONENT {}]: removing one container request.", comp
-              .getName());
-          AMRMClient.ContainerRequest request = requests.iterator().next();
-          amRMClient.removeContainerRequest(request);
+        try {
+          Collection<AMRMClient.ContainerRequest> requests = amRMClient
+              .getMatchingRequests(container.getAllocationRequestId());
+          LOG.info("[COMPONENT {}]: remove {} outstanding container requests " +
+                  "for allocateId " + container.getAllocationRequestId(),
+              comp.getName(), requests.size());
+          // remove the corresponding request
+          if (requests.iterator().hasNext()) {
+            AMRMClient.ContainerRequest request = requests.iterator().next();
+            amRMClient.removeContainerRequest(request);
+          }
+        } catch(Exception e) {
+          //TODO Due to YARN-7490, exception may be thrown, catch and ignore for
+          //now.
+          LOG.error("Exception when removing the matching requests. ", e);
+        }
+      }
+    }
+
+
+    @Override
+    public void onContainersReceivedFromPreviousAttempts(
+        List<Container> containers) {
+      if (containers == null || containers.isEmpty()) {
+        return;
+      }
+      for (Container container : containers) {
+        ComponentInstance compInstance;
+        synchronized (unRecoveredInstances) {
+          compInstance = unRecoveredInstances.remove(container.getId());
+        }
+        if (compInstance != null) {
+          Component component = componentsById.get(
+              container.getAllocationRequestId());
+          ComponentEvent event = new ComponentEvent(component.getName(),
+              CONTAINER_RECOVERED)
+              .setInstance(compInstance)
+              .setContainerId(container.getId())
+              .setContainer(container);
+          component.handle(event);
+        } else {
+          LOG.info("Not waiting to recover container {}, releasing",
+              container.getId());
+          amRMClient.releaseAssignedContainer(container.getId());
         }
       }
     }
@@ -569,7 +662,7 @@ public class ServiceScheduler extends CompositeService {
       }
       ComponentEvent event =
           new ComponentEvent(instance.getCompName(), CONTAINER_STARTED)
-              .setInstance(instance);
+              .setInstance(instance).setContainerId(containerId);
       dispatcher.getEventHandler().handle(event);
     }
 
@@ -647,10 +740,6 @@ public class ServiceScheduler extends CompositeService {
 
   public void removeLiveCompInstance(ContainerId containerId) {
     liveInstances.remove(containerId);
-  }
-
-  public AsyncDispatcher getCompInstanceDispatcher() {
-    return compInstanceDispatcher;
   }
 
   public YarnRegistryViewForProviders getYarnRegistryOperations() {

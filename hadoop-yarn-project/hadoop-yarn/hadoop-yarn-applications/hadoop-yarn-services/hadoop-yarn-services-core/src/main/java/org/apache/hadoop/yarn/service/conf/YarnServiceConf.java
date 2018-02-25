@@ -22,6 +22,8 @@ import org.apache.hadoop.yarn.service.api.records.Configuration;
 
 public class YarnServiceConf {
 
+  private static final String YARN_SERVICE_PREFIX = "yarn.service.";
+
   // Retry settings for the ServiceClient to talk to Service AppMaster
   public static final String CLIENT_AM_RETRY_MAX_WAIT_MS = "yarn.service.client-am.retry.max-wait-ms";
   public static final String CLIENT_AM_RETRY_MAX_INTERVAL_MS = "yarn.service.client-am.retry-interval-ms";
@@ -53,13 +55,6 @@ public class YarnServiceConf {
    */
   public static final String YARN_SERVICE_BASE_PATH = "yarn.service.base.path";
 
-  //TODO rename
-  /** Declare that a keytab must be provided */
-  public static final String KEY_AM_LOGIN_KEYTAB_REQUIRED = "slider.am.login.keytab.required";
-  public static final String KEY_AM_LOGIN_KEYTAB_NAME = "slider.am.login.keytab.name";
-  public static final String KEY_HDFS_KEYTAB_DIR = "slider.hdfs.keytab.dir";
-  public static final String KEY_AM_KEYTAB_LOCAL_PATH = "slider.am.keytab.local.path";
-
   /**
    * maximum number of failed containers (in a single component)
    * before the app exits
@@ -84,6 +79,25 @@ public class YarnServiceConf {
    */
   public static final String READINESS_CHECK_INTERVAL = "yarn.service.readiness-check-interval.seconds";
   public static final int DEFAULT_READINESS_CHECK_INTERVAL = 30; // seconds
+
+  /**
+   * JVM opts.
+   */
+  public static final String JVM_OPTS = "yarn.service.am.java.opts";
+
+  /**
+   * How long to wait until a container is considered dead.
+   */
+  public static final String CONTAINER_RECOVERY_TIMEOUT_MS =
+      YARN_SERVICE_PREFIX + "container-recovery.timeout.ms";
+
+  public static final int DEFAULT_CONTAINER_RECOVERY_TIMEOUT_MS = 120000;
+
+  /**
+   * The dependency tarball file location.
+   */
+  public static final String DEPENDENCY_TARBALL_PATH = YARN_SERVICE_PREFIX
+      + "framework.path";
 
   /**
    * Get long value for the property. First get from the userConf, if not

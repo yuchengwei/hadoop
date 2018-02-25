@@ -28,9 +28,15 @@ import java.util.TreeMap;
 
 import org.apache.commons.lang.builder.HashCodeBuilder;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.federation.resolver.RemoteLocation;
 import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
+import org.apache.hadoop.hdfs.server.federation.router.RouterPermissionChecker;
+import org.apache.hadoop.hdfs.server.federation.router.RouterQuotaUsage;
 import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreSerializer;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -127,6 +133,23 @@ public abstract class MountTable extends BaseRecord {
     // Set the serialized dest string
     record.setDestinations(locations);
 
+    // Set permission fields
+    UserGroupInformation ugi = NameNode.getRemoteUser();
+    record.setOwnerName(ugi.getShortUserName());
+    String group = ugi.getGroups().isEmpty() ? ugi.getShortUserName()
+        : ugi.getPrimaryGroupName();
+    record.setGroupName(group);
+    record.setMode(new FsPermission(
+        RouterPermissionChecker.MOUNT_TABLE_PERMISSION_DEFAULT));
+
+    // Set quota for mount table
+    RouterQuotaUsage quota = new RouterQuotaUsage.Builder()
+        .fileAndDirectoryCount(RouterQuotaUsage.QUOTA_USAGE_COUNT_DEFAULT)
+        .quota(HdfsConstants.QUOTA_DONT_SET)
+        .spaceConsumed(RouterQuotaUsage.QUOTA_USAGE_COUNT_DEFAULT)
+        .spaceQuota(HdfsConstants.QUOTA_DONT_SET).build();
+    record.setQuota(quota);
+
     // Validate
     record.validate();
     return record;
@@ -194,6 +217,62 @@ public abstract class MountTable extends BaseRecord {
   public abstract void setDestOrder(DestinationOrder order);
 
   /**
+   * Get owner name of this mount table entry.
+   *
+   * @return Owner name
+   */
+  public abstract String getOwnerName();
+
+  /**
+   * Set owner name of this mount table entry.
+   *
+   * @param owner Owner name for mount table entry
+   */
+  public abstract void setOwnerName(String owner);
+
+  /**
+   * Get group name of this mount table entry.
+   *
+   * @return Group name
+   */
+  public abstract String getGroupName();
+
+  /**
+   * Set group name of this mount table entry.
+   *
+   * @param group Group name for mount table entry
+   */
+  public abstract void setGroupName(String group);
+
+  /**
+   * Get permission of this mount table entry.
+   *
+   * @return FsPermission permission mode
+   */
+  public abstract FsPermission getMode();
+
+  /**
+   * Set permission for this mount table entry.
+   *
+   * @param mode Permission for mount table entry
+   */
+  public abstract void setMode(FsPermission mode);
+
+  /**
+   * Get quota of this mount table entry.
+   *
+   * @return RouterQuotaUsage quota usage
+   */
+  public abstract RouterQuotaUsage getQuota();
+
+  /**
+   * Set quota for this mount table entry.
+   *
+   * @param quota QuotaUsage for mount table entry
+   */
+  public abstract void setQuota(RouterQuotaUsage quota);
+
+  /**
    * Get the default location.
    * @return The default location.
    */
@@ -235,6 +314,23 @@ public abstract class MountTable extends BaseRecord {
     if (this.isReadOnly()) {
       sb.append("[RO]");
     }
+
+    if (this.getOwnerName() != null) {
+      sb.append("[owner:").append(this.getOwnerName()).append("]");
+    }
+
+    if (this.getGroupName() != null) {
+      sb.append("[group:").append(this.getGroupName()).append("]");
+    }
+
+    if (this.getMode() != null) {
+      sb.append("[mode:").append(this.getMode()).append("]");
+    }
+
+    if (this.getQuota() != null) {
+      sb.append("[quota:").append(this.getQuota()).append("]");
+    }
+
     return sb.toString();
   }
 

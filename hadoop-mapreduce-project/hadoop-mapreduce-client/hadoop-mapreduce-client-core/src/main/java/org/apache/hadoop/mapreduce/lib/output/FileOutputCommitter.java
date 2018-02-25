@@ -87,6 +87,17 @@ public class FileOutputCommitter extends PathOutputCommitter {
   // default value to be 1 to keep consistent with previous behavior
   public static final int FILEOUTPUTCOMMITTER_FAILURE_ATTEMPTS_DEFAULT = 1;
 
+  // Whether tasks should delete their task temporary directories. This is
+  // purely an optimization for filesystems without O(1) recursive delete, as
+  // commitJob will recursively delete the entire job temporary directory.
+  // HDFS has O(1) recursive delete, so this parameter is left false by default.
+  // Users of object stores, for example, may want to set this to true. Note:
+  // this is only used if mapreduce.fileoutputcommitter.algorithm.version=2
+  public static final String FILEOUTPUTCOMMITTER_TASK_CLEANUP_ENABLED =
+      "mapreduce.fileoutputcommitter.task.cleanup.enabled";
+  public static final boolean
+      FILEOUTPUTCOMMITTER_TASK_CLEANUP_ENABLED_DEFAULT = false;
+
   private Path outputPath = null;
   private Path workPath = null;
   private final int algorithmVersion;
@@ -155,17 +166,11 @@ public class FileOutputCommitter extends PathOutputCommitter {
    * @return the path where final output of the job should be placed.  This
    * could also be considered the committed application attempt path.
    */
-  private Path getOutputPath() {
+  @Override
+  public Path getOutputPath() {
     return this.outputPath;
   }
-  
-  /**
-   * @return true if we have an output path set, else false.
-   */
-  private boolean hasOutputPath() {
-    return this.outputPath != null;
-  }
-  
+
   /**
    * @return the path where the output of pending job attempts are
    * stored.
@@ -592,6 +597,17 @@ public class FileOutputCommitter extends PathOutputCommitter {
           mergePaths(fs, taskAttemptDirStatus, outputPath);
           LOG.info("Saved output of task '" + attemptId + "' to " +
               outputPath);
+
+          if (context.getConfiguration().getBoolean(
+              FILEOUTPUTCOMMITTER_TASK_CLEANUP_ENABLED,
+              FILEOUTPUTCOMMITTER_TASK_CLEANUP_ENABLED_DEFAULT)) {
+            LOG.debug(String.format(
+                "Deleting the temporary directory of '%s': '%s'",
+                attemptId, taskAttemptPath));
+            if(!fs.delete(taskAttemptPath, true)) {
+              LOG.warn("Could not delete " + taskAttemptPath);
+            }
+          }
         }
       } else {
         LOG.warn("No Output found for " + attemptId);

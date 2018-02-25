@@ -27,6 +27,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DataOutputBuffer;
@@ -65,6 +66,7 @@ import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
+import org.apache.hadoop.yarn.api.resource.PlacementConstraint;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
@@ -91,6 +93,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptS
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeDecommissioningEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeImpl;
@@ -822,6 +825,12 @@ public class MockRM extends ResourceManager {
     return rmApp;
   }
 
+  public MockNM unRegisterNode(MockNM nm) throws Exception {
+    nm.unRegisterNode();
+    drainEventsImplicitly();
+    return nm;
+  }
+
   public MockNM registerNode(String nodeIdStr, int memory) throws Exception {
     MockNM nm = new MockNM(nodeIdStr, memory, getResourceTrackerService());
     nm.registerNode();
@@ -848,9 +857,9 @@ public class MockRM extends ResourceManager {
     return nm;
   }
 
-  public MockNM registerNode(String nodeIdStr, Resource nodeCapatibility)
+  public MockNM registerNode(String nodeIdStr, Resource nodeCapability)
       throws Exception {
-    MockNM nm = new MockNM(nodeIdStr, nodeCapatibility,
+    MockNM nm = new MockNM(nodeIdStr, nodeCapability,
         getResourceTrackerService());
     nm.registerNode();
     drainEventsImplicitly();
@@ -917,10 +926,24 @@ public class MockRM extends ResourceManager {
         node.getState());
   }
 
+  public void sendNodeGracefulDecommission(
+      MockNM nm, int timeout) throws Exception {
+    RMNodeImpl node = (RMNodeImpl)
+        getRMContext().getRMNodes().get(nm.getNodeId());
+    Assert.assertNotNull("node shouldn't be null", node);
+    node.handle(new RMNodeDecommissioningEvent(nm.getNodeId(), timeout));
+  }
+
   public void sendNodeEvent(MockNM nm, RMNodeEventType event) throws Exception {
     RMNodeImpl node = (RMNodeImpl)
         getRMContext().getRMNodes().get(nm.getNodeId());
+    Assert.assertNotNull("node shouldn't be null", node);
     node.handle(new RMNodeEvent(nm.getNodeId(), event));
+  }
+
+  public Integer getDecommissioningTimeout(NodeId nodeid) {
+    return this.getRMContext().getRMNodes()
+        .get(nodeid).getDecommissioningTimeout();
   }
 
   public KillApplicationResponse killApp(ApplicationId appId) throws Exception {
@@ -1178,6 +1201,7 @@ public class MockRM extends ResourceManager {
     nm.nodeHeartbeat(true);
     ((AbstractYarnScheduler)rm.getResourceScheduler()).update();
     rm.drainEventsImplicitly();
+    nm.nodeHeartbeat(true);
     MockAM am = rm.sendAMLaunched(attempt.getAppAttemptId());
     rm.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.LAUNCHED);
     return am;
@@ -1194,6 +1218,7 @@ public class MockRM extends ResourceManager {
     nm.nodeHeartbeat(true);
     ((AbstractYarnScheduler)rm.getResourceScheduler()).update();
     rm.drainEventsImplicitly();
+    nm.nodeHeartbeat(true);
     MockAM am = new MockAM(rm.getRMContext(), rm.masterService,
         attempt.getAppAttemptId());
     rm.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.LAUNCHED);
@@ -1212,6 +1237,18 @@ public class MockRM extends ResourceManager {
   public static MockAM launchAndRegisterAM(RMApp app, MockRM rm, MockNM nm)
       throws Exception {
     MockAM am = launchAM(app, rm, nm);
+    am.registerAppAttempt();
+    rm.waitForState(app.getApplicationId(), RMAppState.RUNNING);
+    return am;
+  }
+
+  public static MockAM launchAndRegisterAM(RMApp app, MockRM rm, MockNM nm,
+      Map<Set<String>, PlacementConstraint> constraints) throws Exception {
+    MockAM am = launchAM(app, rm, nm);
+    for (Map.Entry<Set<String>, PlacementConstraint> e :
+        constraints.entrySet()) {
+      am.addPlacementConstraint(e.getKey(), e.getValue());
+    }
     am.registerAppAttempt();
     rm.waitForState(app.getApplicationId(), RMAppState.RUNNING);
     return am;

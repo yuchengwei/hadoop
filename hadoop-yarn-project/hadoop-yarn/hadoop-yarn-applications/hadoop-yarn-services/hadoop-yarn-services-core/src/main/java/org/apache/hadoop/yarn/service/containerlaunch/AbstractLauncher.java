@@ -19,16 +19,15 @@
 package org.apache.hadoop.yarn.service.containerlaunch;
 
 import com.google.common.base.Preconditions;
-import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerRetryContext;
 import org.apache.hadoop.yarn.api.records.ContainerRetryPolicy;
 import org.apache.hadoop.yarn.api.records.LocalResource;
-import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.service.ServiceContext;
 import org.apache.hadoop.yarn.service.conf.YarnServiceConstants;
-import org.apache.hadoop.yarn.service.utils.CoreFileSystem;
 import org.apache.hadoop.yarn.service.utils.ServiceUtils;
+import org.apache.hadoop.yarn.util.Records;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,8 +39,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import static org.apache.hadoop.yarn.service.provider.docker.DockerKeys.DEFAULT_DOCKER_NETWORK;
-
 /**
  * Launcher of applications: base class
  */
@@ -49,10 +46,6 @@ public class AbstractLauncher {
   private static final Logger log =
     LoggerFactory.getLogger(AbstractLauncher.class);
   public static final String CLASSPATH = "CLASSPATH";
-  /**
-   * Filesystem to use for the launch
-   */
-  protected final CoreFileSystem coreFileSystem;
   /**
    * Env vars; set up at final launch stage
    */
@@ -63,25 +56,15 @@ public class AbstractLauncher {
   protected final Map<String, LocalResource> localResources = new HashMap<>();
   protected final Map<String, String> mountPaths = new HashMap<>();
   private final Map<String, ByteBuffer> serviceData = new HashMap<>();
-  // security
-  protected final Credentials credentials;
   protected boolean yarnDockerMode = false;
   protected String dockerImage;
-  protected String dockerNetwork = DEFAULT_DOCKER_NETWORK;
+  protected String dockerNetwork;
   protected String dockerHostname;
-  protected String runPrivilegedContainer;
+  protected boolean runPrivilegedContainer = false;
+  private ServiceContext context;
 
-
-  /**
-   * Create instance.
-   * @param coreFileSystem filesystem
-   * @param credentials initial set of credentials -null is permitted
-   */
-  public AbstractLauncher(
-      CoreFileSystem coreFileSystem,
-      Credentials credentials) {
-    this.coreFileSystem = coreFileSystem;
-    this.credentials = credentials != null ? credentials: new Credentials();
+  public AbstractLauncher(ServiceContext context) {
+    this.context = context;
   }
   
   public void setYarnDockerMode(boolean yarnDockerMode){
@@ -111,14 +94,6 @@ public class AbstractLauncher {
   public void addLocalResource(String subPath, LocalResource resource, String mountPath) {
     localResources.put(subPath, resource);
     mountPaths.put(subPath, mountPath);
-  }
-
-  /**
-   * Accessor to the credentials
-   * @return the credentials associated with this launcher
-   */
-  public Credentials getCredentials() {
-    return credentials;
   }
 
 
@@ -160,18 +135,24 @@ public class AbstractLauncher {
     containerLaunchContext.setLocalResources(localResources);
 
     //tokens
-    log.debug("{} tokens", credentials.numberOfTokens());
-    containerLaunchContext.setTokens(CredentialUtils.marshallCredentials(
-        credentials));
+    if (context.tokens != null) {
+      containerLaunchContext.setTokens(context.tokens.duplicate());
+    }
 
     if(yarnDockerMode){
       Map<String, String> env = containerLaunchContext.getEnvironment();
       env.put("YARN_CONTAINER_RUNTIME_TYPE", "docker");
       env.put("YARN_CONTAINER_RUNTIME_DOCKER_IMAGE", dockerImage);
-      env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK", dockerNetwork);
+      if (ServiceUtils.isSet(dockerNetwork)) {
+        env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK",
+            dockerNetwork);
+      }
       env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_HOSTNAME",
           dockerHostname);
-      env.put("YARN_CONTAINER_RUNTIME_DOCKER_RUN_PRIVILEGED_CONTAINER", runPrivilegedContainer);
+      if (runPrivilegedContainer) {
+        env.put("YARN_CONTAINER_RUNTIME_DOCKER_RUN_PRIVILEGED_CONTAINER",
+            "true");
+      }
       StringBuilder sb = new StringBuilder();
       for (Entry<String,String> mount : mountPaths.entrySet()) {
         if (sb.length() > 0) {
@@ -261,11 +242,7 @@ public class AbstractLauncher {
   }
 
   public void setRunPrivilegedContainer(boolean runPrivilegedContainer) {
-    if (runPrivilegedContainer) {
-      this.runPrivilegedContainer = Boolean.toString(true);
-    } else {
-      this.runPrivilegedContainer = Boolean.toString(false);
-    }
+    this.runPrivilegedContainer = runPrivilegedContainer;
   }
 
 }

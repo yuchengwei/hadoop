@@ -24,6 +24,8 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.registry.client.api.RegistryConstants;
 import org.apache.hadoop.registry.client.binding.RegistryUtils;
+import org.apache.hadoop.security.HadoopKerberosName;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.api.records.Artifact;
@@ -40,6 +42,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -57,6 +61,9 @@ public class ServiceApiUtil {
   private static final PatternValidator namePattern
       = new PatternValidator("[a-z][a-z0-9-]*");
 
+  private static final PatternValidator userNamePattern
+      = new PatternValidator("[a-z][a-z0-9-.]*");
+
   @VisibleForTesting
   public static void setJsonSerDeser(JsonSerDeser jsd) {
     jsonSerDeser = jsd;
@@ -68,11 +75,15 @@ public class ServiceApiUtil {
       IOException {
     boolean dnsEnabled = conf.getBoolean(RegistryConstants.KEY_DNS_ENABLED,
         RegistryConstants.DEFAULT_DNS_ENABLED);
-    if (dnsEnabled && RegistryUtils.currentUser().length() > RegistryConstants
-        .MAX_FQDN_LABEL_LENGTH) {
-      throw new IllegalArgumentException(RestApiErrorMessages
-          .ERROR_USER_NAME_INVALID);
+    if (dnsEnabled) {
+      if (RegistryUtils.currentUser().length()
+          > RegistryConstants.MAX_FQDN_LABEL_LENGTH) {
+        throw new IllegalArgumentException(
+            RestApiErrorMessages.ERROR_USER_NAME_INVALID);
+      }
+      userNamePattern.validate(RegistryUtils.currentUser());
     }
+
     if (StringUtils.isEmpty(service.getName())) {
       throw new IllegalArgumentException(
           RestApiErrorMessages.ERROR_APPLICATION_NAME_INVALID);
@@ -84,6 +95,17 @@ public class ServiceApiUtil {
     if (!hasComponent(service)) {
       throw new IllegalArgumentException(
           "No component specified for " + service.getName());
+    }
+
+    if (UserGroupInformation.isSecurityEnabled()) {
+      if (!StringUtils.isEmpty(service.getKerberosPrincipal().getKeytab())) {
+        try {
+          // validate URI format
+          new URI(service.getKerberosPrincipal().getKeytab());
+        } catch (URISyntaxException e) {
+          throw new IllegalArgumentException(e);
+        }
+      }
     }
 
     // Validate there are no component name collisions (collisions are not
@@ -315,13 +337,19 @@ public class ServiceApiUtil {
       org.apache.hadoop.yarn.api.records.Resource maxResource,
       Service service) throws YarnException {
     for (Component component : service.getComponents()) {
-      // only handle mem now.
       long mem = Long.parseLong(component.getResource().getMemory());
       if (mem > maxResource.getMemorySize()) {
         throw new YarnException(
-            "Component " + component.getName() + " memory size (" + mem
-                + ") is larger than configured max container memory size ("
-                + maxResource.getMemorySize() + ")");
+            "Component " + component.getName() + ": specified memory size ("
+                + mem + ") is larger than configured max container memory " +
+                "size (" + maxResource.getMemorySize() + ")");
+      }
+      int cpu = component.getResource().getCpus();
+      if (cpu > maxResource.getVirtualCores()) {
+        throw new YarnException(
+            "Component " + component.getName() + ": specified number of " +
+                "virtual core (" + cpu + ") is larger than configured max " +
+                "virtual core size (" + maxResource.getVirtualCores() + ")");
       }
     }
   }

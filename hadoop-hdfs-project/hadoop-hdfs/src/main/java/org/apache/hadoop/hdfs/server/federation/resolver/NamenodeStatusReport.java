@@ -58,6 +58,7 @@ public class NamenodeStatusReport {
   private long numOfBlocksUnderReplicated = -1;
   private long numOfBlocksPendingDeletion = -1;
   private long totalSpace = -1;
+  private long providedSpace = -1;
 
   /** If the fields are valid. */
   private boolean registrationValid = false;
@@ -289,14 +290,14 @@ public class NamenodeStatusReport {
    * @param numFiles Number of files.
    * @param numBlocks Total number of blocks.
    * @param numBlocksMissing Number of missing blocks.
-   * @param numOfBlocksPendingReplication Number of blocks pending replication.
-   * @param numOfBlocksUnderReplicated Number of blocks under replication.
-   * @param numOfBlocksPendingDeletion Number of blocks pending deletion.
+   * @param numBlocksPendingReplication Number of blocks pending replication.
+   * @param numBlocksUnderReplicated Number of blocks under replication.
+   * @param numBlocksPendingDeletion Number of blocks pending deletion.
    */
   public void setNamesystemInfo(long available, long total,
       long numFiles, long numBlocks, long numBlocksMissing,
       long numBlocksPendingReplication, long numBlocksUnderReplicated,
-      long numBlocksPendingDeletion) {
+      long numBlocksPendingDeletion, long providedSpace) {
     this.totalSpace = total;
     this.availableSpace = available;
     this.numOfBlocks = numBlocks;
@@ -306,6 +307,7 @@ public class NamenodeStatusReport {
     this.numOfBlocksPendingDeletion = numBlocksPendingDeletion;
     this.numOfFiles = numFiles;
     this.statsValid = true;
+    this.providedSpace = providedSpace;
   }
 
   /**
@@ -345,6 +347,14 @@ public class NamenodeStatusReport {
   }
 
   /**
+   * Get the space occupied by provided storage.
+   *
+   * @return the provided capacity.
+   */
+  public long getProvidedSpace() {
+    return this.providedSpace;
+  }
+  /**
    * Get the number of missing blocks.
    *
    * @return Number of missing blocks.
@@ -378,6 +388,14 @@ public class NamenodeStatusReport {
    */
   public long getNumOfBlocksPendingDeletion() {
     return this.numOfBlocksPendingDeletion;
+  }
+
+  /**
+   * Set the validity of registration.
+   * @param isValid The desired value to be set.
+   */
+  public void setRegistrationValid(boolean isValid) {
+    this.registrationValid = isValid;
   }
 
   @Override
